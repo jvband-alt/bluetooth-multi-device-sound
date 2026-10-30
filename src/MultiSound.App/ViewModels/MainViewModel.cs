@@ -8,6 +8,7 @@ using MultiSound.Audio;
 using MultiSound.Audio.Capture;
 using MultiSound.Audio.Devices;
 using MultiSound.Core.Dsp;
+using MultiSound.Core.Measurement;
 using MultiSound.Core.Settings;
 using CaptureMode = MultiSound.Core.Settings.CaptureMode;
 
@@ -41,6 +42,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private int _captureModeIndex;
     private SourceOption? _selectedSource;
     private bool _suppressSourceChange;
+    private bool _isMeasuring;
+    private string _measureText = "";
+    private StatusKind _measureKind = StatusKind.Neutral;
+    private int _statsLogCounter;
 
     public MainViewModel(SettingsStore store, AppSettings settings, Dispatcher dispatcher)
     {
@@ -67,6 +72,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         OpenLogCommand = new RelayCommand(OpenLogFolder);
         DismissNoticeCommand = new RelayCommand(() => Notice = "");
         ApplyBufferCommand = new RelayCommand(async () => await ApplyConfigIfRunningAsync(), () => IsRunning);
+        MeasureCommand = new RelayCommand(async () => await MeasureAsync(), () => IsRunning && !IsMeasuring);
     }
 
     /// <summary>Estado de reprodução mudou (para a bandeja).</summary>
@@ -93,6 +99,16 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public ICommand OpenSoundSettingsCommand { get; }
     public ICommand OpenLogCommand { get; }
     public ICommand DismissNoticeCommand { get; }
+    public ICommand MeasureCommand { get; }
+
+    public bool IsMeasuring
+    {
+        get => _isMeasuring;
+        private set { if (Set(ref _isMeasuring, value)) CommandManager.InvalidateRequerySuggested(); }
+    }
+
+    public string MeasureText { get => _measureText; private set => Set(ref _measureText, value); }
+    public StatusKind MeasureKind { get => _measureKind; private set => Set(ref _measureKind, value); }
 
     public bool IsRunning
     {
@@ -426,6 +442,88 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _engine.SetTestSignal(IsTesting);
     }
 
+    /// <summary>Mede com o microfone do notebook e aplica os atrasos calculados.</summary>
+    private async Task MeasureAsync()
+    {
+        if (_engine is null || !IsRunning || IsMeasuring) return;
+        var snap = _engine.GetSnapshot();
+        var playing = Devices
+            .Where(d => d.IsSelected && snap.Outputs.Any(o => string.Equals(o.Id, d.Id, StringComparison.OrdinalIgnoreCase) && o.State == OutputState.Playing))
+            .ToList();
+        if (playing.Count < 2)
+        {
+            MeasureKind = StatusKind.Warning;
+            MeasureText = "São necessárias pelo menos duas caixas com status \"Reproduzindo\". " +
+                          "Se uma aparece como \"Ignorado\", escolha outra saída padrão do Windows (veja o texto em Origem do áudio).";
+            return;
+        }
+
+        if (IsTesting) ToggleTest();
+        IsMeasuring = true;
+        MeasureKind = StatusKind.Busy;
+        MeasureText = "Medindo… mantenha silêncio. As caixas vão tocar um som de varredura, uma de cada vez.";
+        Log.Write($"Medição iniciada: {string.Join(", ", playing.Select(p => $"{p.Name}(+{p.DelayMs}ms)"))}");
+        try
+        {
+            var progress = new Progress<double>(f =>
+                MeasureText = $"Medindo… {f * 100:0}% — mantenha silêncio. As caixas tocam uma de cada vez.");
+            var outcome = await _engine.MeasureSyncAsync(playing.Select(p => p.Id).ToList(), progress);
+            foreach (var o in outcome.Outputs)
+                Log.Write($"Medição {o.Name}: latência={o.Latency.LatencySeconds * 1000:0.0} ms, dispersão={o.Latency.SpreadSeconds * 1000:0.0} ms, " +
+                          $"confiança={o.Latency.Confidence:0}, rodadas={o.Latency.ValidRounds}, nível={o.Latency.Level:0.000}");
+
+            if (!outcome.Success)
+            {
+                MeasureKind = StatusKind.Error;
+                MeasureText = outcome.Message;
+                Log.Write("Medição falhou: " + outcome.Message);
+                return;
+            }
+
+            var vms = outcome.Outputs.Select(o => playing.First(p => p.Id == o.Id)).ToList();
+            var newDelays = SyncAnalyzer.ComputeDelays(vms.Select(v => v.DelayMs).ToList(),
+                outcome.Outputs.Select((o, i) => o.Latency with { Device = i }).ToList(), DeviceViewModel.MaxDelayMs);
+
+            var lines = new List<string>();
+            double reference = outcome.Outputs.Where(o => o.Latency.Detected).Min(o => o.Latency.LatencySeconds);
+            bool unstable = false;
+            for (int i = 0; i < vms.Count; i++)
+            {
+                var lat = outcome.Outputs[i].Latency;
+                if (newDelays[i] is int d)
+                {
+                    vms[i].DelayMs = d;
+                    double later = (lat.LatencySeconds - reference) * 1000;
+                    lines.Add($"{vms[i].Name}: chegava {later:0} ms depois da mais rápida → atraso {(d == 0 ? "0" : "+" + d)} ms");
+                    if (lat.SpreadSeconds > 0.008) unstable = true;
+                }
+                else
+                {
+                    lines.Add($"{vms[i].Name}: não foi ouvida (atraso mantido)");
+                }
+            }
+            if (newDelays.Any(d => d == DeviceViewModel.MaxDelayMs))
+                lines.Add("Um atraso chegou ao limite de 1000 ms; confira as conexões e repita.");
+            if (unstable)
+                lines.Add("As repetições variaram mais de 8 ms: repita em ambiente mais silencioso ou com o notebook mais perto das caixas.");
+            lines.Add($"Microfone: {outcome.MicrophoneName}. Confira com TESTAR SINCRONIZAÇÃO e ajuste fino se necessário.");
+
+            MeasureKind = unstable ? StatusKind.Warning : StatusKind.Ok;
+            MeasureText = string.Join(Environment.NewLine, lines);
+            Log.Write("Medição aplicada: " + string.Join(" | ", lines));
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Medição", ex);
+            MeasureKind = StatusKind.Error;
+            MeasureText = $"Falha na medição: {ex.Message}";
+        }
+        finally
+        {
+            IsMeasuring = false;
+        }
+    }
+
     private async Task ApplyConfigIfRunningAsync()
     {
         if (_engine is null || !IsRunning) return;
@@ -490,12 +588,18 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             vm.ShowRunningStatus(status, snap.CaptureIdle, LevelMath.PeakToMeter);
         }
 
+        if (++_statsLogCounter % 120 == 0) // ~30 s: ajuda no diagnóstico de testes físicos
+            foreach (var o in snap.Outputs)
+                Log.Write($"Estado {o.Name}: {o.State} {(o.Stats is { } st ? $"buffer={st.FillMs:0}/{st.TargetMs:0} ms drift={st.CorrectionPpm:0} ppm underruns={st.Underruns} overflows={st.Overflows} ressinc={st.Resyncs}" : o.Message)}");
+
         int playing = snap.Outputs.Count(o => o.State == OutputState.Playing);
         int problems = snap.Outputs.Count(o => o.State is OutputState.Reconnecting or OutputState.Failed);
         if (snap.Error is not null && !snap.CaptureActive)
             SetStatus(snap.Error, StatusKind.Error);
         else if (playing == 0)
             SetStatus("Nenhuma saída ativa. Verifique as conexões.", StatusKind.Warning);
+        else if (IsMeasuring)
+            SetStatus("Medindo a sincronização pelo microfone…", StatusKind.Busy);
         else if (IsTesting)
             SetStatus($"Teste de sincronização em {playing} dispositivo{(playing > 1 ? "s" : "")}.", StatusKind.Busy);
         else

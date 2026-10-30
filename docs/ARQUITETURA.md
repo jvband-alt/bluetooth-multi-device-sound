@@ -82,6 +82,24 @@ Apps (Spotify, YouTube, …)
   (silêncio até atingir o alvo). Overflow descarta as amostras mais antigas (latência limitada).
   Silêncio da captura (nenhum app tocando) não conta como falha.
 
+### Medição automática pelo microfone
+
+- **Referência**: um microfone que não seja Bluetooth (o microfone de uma caixa forçaria o perfil HFP e
+  mudaria a latência que se quer medir). Escolha: microfone padrão do Windows se não for Bluetooth; senão o
+  primeiro ativo não Bluetooth (`DeviceCatalog.PickMeasurementMicrophone`).
+- **Sinal**: chirp linear 800 Hz → 6 kHz, 300 ms (faixa que caixas pequenas e microfones de notebook
+  reproduzem bem), com bordas suavizadas.
+- **Plano** (`SyncMeasurementPlan`): a saída *k* toca o chirp sozinha no instante `0,3 s + (r·N + k)·2,5 s`
+  da linha do tempo da alimentação, por 3 rodadas; as demais recebem silêncio. Intervalo de 2,5 s e janela
+  de busca de −0,2/+1,6 s garantem que janelas vizinhas não se sobreponham (latência total até ~1,6 s).
+- **Alinhamento**: no instante em que o plano começa, registra-se o índice atual da gravação. A diferença
+  entre esse índice e o "verdadeiro" (latência do microfone) é a mesma para todas as saídas e se cancela.
+- **Detecção** (`CrossCorrelator`): correlação cruzada por FFT, interpolação parabólica sub-amostra,
+  confiança = pico / mediana da correlação (limiar 15; ruído puro fica ~6, detecções reais > 45 em teste).
+- **Resultado** (`SyncAnalyzer.ComputeDelays`): mediana das rodadas por saída; a saída mais lenta fica
+  sem atraso extra, as outras recebem `atraso_atual + (latência_mais_lenta − latência_própria)`, e o
+  menor atraso é zerado para não somar latência desnecessária.
+
 ## 4. Prevenção de realimentação e duplicação (`RoutingPlanner`)
 
 | Situação | Decisão |

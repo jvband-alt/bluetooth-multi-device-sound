@@ -36,6 +36,14 @@ Saída padrão do Windows: alto-falantes do notebook, no mudo.
 - [ ] Após 30 minutos tocando, ainda sem eco perceptível (drift compensado).
 - [ ] Coluna "drift" estabiliza (valores típicos: algumas dezenas a poucas centenas de ppm).
 
+## 3b. Sincronização automática (microfone do notebook)
+- [ ] Zerar os atrasos, clicar SINCRONIZAR COM O MICROFONE: ouvir o chirp em cada caixa, uma de cada vez.
+- [ ] Resultado aplicado. Atrasos obtidos: Harman ____ ms, MIFA ____ ms.
+- [ ] Repetir 3 vezes: os valores variam menos de ~5 ms entre si.
+- [ ] Conferir com TESTAR SINCRONIZAÇÃO: um único bipe (ou diferença mínima).
+- [ ] Mutar uma caixa e medir: o app diz que ela "não foi ouvida" e mantém o atraso.
+- [ ] Alternativa por linha de comando: `multisound-cli tocar 1 2 --medir`.
+
 ## 4. Desconexão / reconexão
 - [ ] Desligar a MIFA durante a música → status "Reconectando…", a Harman continua tocando.
 - [ ] Religar a MIFA → volta a tocar sozinha (status "Reproduzindo"), com o mesmo atraso.

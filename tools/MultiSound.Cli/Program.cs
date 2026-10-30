@@ -15,7 +15,7 @@ if (args.Length == 0 || args[0] is "listar" or "list")
 {
     PrintDevices(devices);
     Console.WriteLine();
-    Console.WriteLine("Uso: multisound-cli tocar <nº> <nº> [...] [--atraso <nº>=<ms>] [--modo apps|loopback] [--origem <nº>] [--buffer <ms>] [--teste]");
+    Console.WriteLine("Uso: multisound-cli tocar <nº> <nº> [...] [--atraso <nº>=<ms>] [--modo apps|loopback] [--origem <nº>] [--buffer <ms>] [--teste] [--medir]");
     return 0;
 }
 
@@ -40,6 +40,7 @@ var mode = CaptureMode.AllAppsExceptSelf;
 string? sourceId = null;
 int buffer = 60;
 bool test = false;
+bool measure = false;
 
 for (int i = 1; i < args.Length; i++)
 {
@@ -62,6 +63,9 @@ for (int i = 1; i < args.Length; i++)
             break;
         case "--teste":
             test = true;
+            break;
+        case "--medir":
+            measure = true;
             break;
         default:
             var d = Pick(devices, a);
@@ -92,6 +96,23 @@ engine.SetTestSignal(test);
 var stop = new TaskCompletionSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; stop.TrySetResult(); };
 Console.WriteLine("Reproduzindo. Ctrl+C para parar.");
+
+if (measure)
+{
+    await Task.Delay(3000);
+    Console.WriteLine("Medindo a sincronização pelo microfone (mantenha silêncio)…");
+    var outcome = await engine.MeasureSyncAsync(outputs.Select(o => o.Id).ToList());
+    Console.WriteLine(outcome.Success ? $"Microfone: {outcome.MicrophoneName}" : $"Falhou: {outcome.Message}");
+    foreach (var o in outcome.Outputs)
+        Console.WriteLine($"  {o.Name}: latência {o.Latency.LatencySeconds * 1000:0.0} ms (dispersão {o.Latency.SpreadSeconds * 1000:0.0} ms, confiança {o.Latency.Confidence:0})");
+    if (outcome.Success)
+    {
+        var current = outputs.Select(o => o.DelayMs).ToList();
+        var suggested = MultiSound.Core.Measurement.SyncAnalyzer.ComputeDelays(current, outcome.Outputs.Select((o, i) => o.Latency with { Device = i }).ToList());
+        for (int i = 0; i < outputs.Count; i++)
+            Console.WriteLine($"  Atraso sugerido para {outputs[i].Name}: {suggested[i]?.ToString() ?? "(não medido)"} ms");
+    }
+}
 
 while (!stop.Task.IsCompleted)
 {

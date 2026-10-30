@@ -44,3 +44,11 @@ public sealed record EngineSnapshot(
 {
     public static readonly EngineSnapshot Idle = new(false, false, false, "", null, null, 0f, false, null, Array.Empty<OutputStatus>());
 }
+
+public sealed record MeasuredOutput(string Id, string Name, Core.Measurement.DeviceLatency Latency);
+
+public sealed record SyncMeasurementOutcome(
+    bool Success,
+    string Message,
+    string? MicrophoneName,
+    IReadOnlyList<MeasuredOutput> Outputs);

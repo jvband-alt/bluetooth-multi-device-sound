@@ -7,6 +7,7 @@ ou de qualquer outro programa, sem aplicativos das fabricantes.
 - Aplicativo nativo para Windows 10 e 11 (C# / .NET 8 / WPF), sem Electron, sem navegador embutido.
 - Captura o áudio do sistema via **WASAPI** e envia um fluxo independente para cada dispositivo.
 - Atraso (delay) e volume ajustáveis por dispositivo, **durante a reprodução**.
+- **Sincronização automática** pelo microfone do notebook (ou da webcam).
 - Correção automática e gradual de *drift* entre os relógios dos dispositivos.
 - Reconexão automática quando uma caixa desconecta e volta.
 - Ícone na bandeja, inicia minimizado, lembra os dispositivos, tema escuro, interface em português.
@@ -76,16 +77,36 @@ Captura a mixagem enviada a um dispositivo específico (por padrão, a saída pa
 ## 4. Sincronização das caixas
 
 Cada caixa Bluetooth tem latência própria (normalmente entre 100 e 300 ms, variando por modelo,
-codec e até a cada reconexão). O MultiSound não consegue medir essa latência sozinho: o Windows não
-informa o atraso interno da caixa. Por isso o ajuste é **manual e assistido**:
+codec e até a cada reconexão). O Windows não informa esse atraso interno, então ele é **medido com
+um microfone** ou ajustado de ouvido.
 
-1. Com a reprodução ativa, clique em **TESTAR SINCRONIZAÇÃO**. Todas as caixas tocam um bipe por
-   segundo (o áudio dos apps fica pausado durante o teste).
-2. Fique entre as caixas. Se ouvir dois bipes, descubra qual toca **antes** — use o botão **Mudo**
-   de cada caixa para ouvir uma de cada vez.
-3. Aumente o **Atraso** da caixa que toca antes (passos de 5 ms com `−`/`+`, ou digite o valor e
-   pressione Enter) até ouvir **um único bipe**.
-4. Clique em **ENCERRAR TESTE**. Os atrasos são salvos e reaplicados nas próximas vezes.
+Pré-requisito: todas as caixas devem estar com status **Reproduzindo**. Se uma aparecer como
+**Ignorado**, ela é a saída padrão do Windows — veja a seção 3.
+
+### Automática (recomendada): SINCRONIZAR COM O MICROFONE
+
+1. Com a reprodução ativa, deixe o notebook mais ou menos **à mesma distância** das caixas e faça silêncio.
+2. Clique em **SINCRONIZAR COM O MICROFONE**. Cada caixa toca um som de varredura (*chirp*), uma de
+   cada vez, três rodadas (~15 s). O áudio dos apps fica em silêncio durante a medição.
+3. O MultiSound grava pelo microfone do notebook/webcam, localiza cada chirp por correlação cruzada,
+   calcula quanto cada caixa chega depois da outra e **aplica os atrasos**.
+
+Por que o microfone do notebook e não o das caixas: abrir o microfone de uma caixa Bluetooth troca o
+perfil dela de estéreo (A2DP) para viva-voz (HFP) — a latência medida não seria a da música. Por isso
+o app **recusa microfones Bluetooth** e usa o microfone padrão do Windows se ele não for Bluetooth
+(senão, o primeiro microfone não Bluetooth disponível). Como uma única gravação ouve todas as caixas, o
+atraso do próprio microfone se cancela.
+
+Precisão: em teste simulado (eco da sala, ruído, microfone a 16–48 kHz) o erro é menor que 1 ms. Na
+prática, a distância conta: cada 34 cm de diferença entre as caixas e o notebook somam ~1 ms. Se o
+resultado vier com aviso de instabilidade, repita mais perto e em silêncio.
+
+### Manual: TESTAR SINCRONIZAÇÃO
+
+1. Clique em **TESTAR SINCRONIZAÇÃO**: todas as caixas tocam um bipe por segundo.
+2. Fique entre as caixas. Se ouvir dois bipes, descubra qual toca **antes** (use **Mudo** para ouvir
+   uma de cada vez) e aumente o **Atraso** dela até ouvir um único bipe.
+3. Clique em **ENCERRAR TESTE**. Os atrasos são salvos.
 
 Exemplo: `Harman Kardon: 0 ms` · `MIFA A90: +120 ms`.
 
@@ -127,8 +148,10 @@ Em **Configurações** (no fim da janela):
 - **Modo exclusivo**: se outro programa abrir uma caixa em modo exclusivo, o MultiSound não consegue
   usá-la (mensagem "em uso exclusivo"). Desmarque "Permitir que aplicativos assumam o controle
   exclusivo" nas propriedades do dispositivo.
-- **Medição automática de latência**: não implementada. Exigiria um microfone como referência e
-  ainda assim teria precisão limitada; o assistente de bipes é a forma confiável disponível.
+- **Medição automática**: precisa de um microfone que não seja Bluetooth (notebook, webcam, USB) e de
+  silêncio. Ela mede o atraso **no ponto onde está o microfone**; se você ouve de outro lugar da sala,
+  diferenças de distância às caixas alteram um pouco o resultado (~3 ms por metro).
+  Se a privacidade do Windows bloquear o microfone para apps da área de trabalho, o app avisa.
 
 ## 7. Solução de problemas
 
@@ -136,7 +159,8 @@ Em **Configurações** (no fim da janela):
 |---|---|
 | Caixa "Reconectando…" | Verifique se ela está conectada no Windows; o app tenta de novo a cada 3 s e ao detectar a reconexão. |
 | Som picotando em uma caixa | Aumente o buffer de segurança e a latência por saída; aproxime as caixas do PC; desligue outros dispositivos Bluetooth; prefira Wi-Fi 5 GHz. |
-| Eco/duas batidas | Ajuste o atraso com o teste de sincronização. |
+| Eco/duas batidas | Use SINCRONIZAR COM O MICROFONE (ou o teste de bipes). |
+| Medição "não ouviu" uma caixa | Ela pode estar no mudo, com volume baixo, longe, ou o microfone bloqueado em Privacidade → Microfone. |
 | Medidor "Origem" parado com música tocando | No modo loopback, a origem está no mudo/volume baixo ou não é a saída onde o app toca. No modo "todos os apps", confira se o app de música não está mudo no Mixer de Volume. |
 | "Ignorado" em uma caixa | Ela é a origem da captura ou a saída padrão do Windows; veja a seção 3. |
 | Qualquer outro problema | **Configurações → Abrir pasta de registros** e veja `multisound.log`. |
@@ -169,6 +193,10 @@ dotnet run --project tools/MultiSound.Cli -- tocar 1 2 --atraso 2=120
 ```
 
 ```bash
+dotnet run --project tools/MultiSound.Cli -- tocar 1 2 --medir
+```
+
+```bash
 dotnet run --project tools/MultiSound.Cli -- diag
 ```
 
@@ -179,7 +207,9 @@ dotnet run --project tools/MultiSound.Cli -- diag
   (fidelidade de senoides, SNR > 80 dB, razão variável), controlador de drift (convergência com
   ±1200 ppm), pipeline completo com relógios simulados (nível do buffer, ausência de underruns,
   atraso relativo entre saídas = atraso configurado ±6 ms, troca de atraso sem descontinuidade,
-  silêncio da captura), roteamento anti-realimentação, configurações JSON.
+  silêncio da captura), medição pelo microfone (gravação simulada com eco, ruído e latência de
+  microfone desconhecida: erro < 1 ms; ruído puro não gera falsa detecção), cálculo dos atrasos,
+  roteamento anti-realimentação, configurações JSON.
 - **Teste de fumaça da interface** (CI em Windows): abre o app, inicializa o áudio, renderiza a
   janela e salva uma captura de tela.
 - **Testes físicos** (precisam do seu PC e das caixas): roteiro em

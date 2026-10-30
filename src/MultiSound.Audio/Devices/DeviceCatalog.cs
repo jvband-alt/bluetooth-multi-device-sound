@@ -97,6 +97,45 @@ public sealed class DeviceCatalog : IDisposable
         return null;
     }
 
+    /// <summary>
+    /// Escolhe um microfone para a medição de sincronização. Microfones Bluetooth são recusados: abri-los
+    /// muda as caixas para o perfil viva-voz (HFP) e invalidaria a medição do perfil estéreo (A2DP).
+    /// Preferência: o microfone padrão do Windows, se não for Bluetooth; senão, o primeiro ativo não Bluetooth.
+    /// </summary>
+    internal MMDevice? PickMeasurementMicrophone()
+    {
+        string? defaultId = null;
+        try
+        {
+            if (Enumerator.HasDefaultAudioEndpoint(DataFlow.Capture, Role.Console))
+            {
+                using var d = Enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Console);
+                defaultId = d.ID;
+            }
+        }
+        catch
+        {
+            // Sem microfone padrão.
+        }
+
+        MMDevice? chosen = null;
+        foreach (var device in Enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active))
+        {
+            string name = SafeGet(() => device.FriendlyName) ?? "";
+            bool bluetooth = DeviceClassifier.IsBluetooth(FindBluetoothMarker(device), name);
+            bool isDefault = string.Equals(device.ID, defaultId, StringComparison.OrdinalIgnoreCase);
+            if (!bluetooth && (chosen is null || isDefault))
+            {
+                chosen?.Dispose();
+                chosen = device;
+                if (isDefault) break;
+                continue;
+            }
+            device.Dispose();
+        }
+        return chosen;
+    }
+
     private static DeviceInfo Describe(MMDevice device, string? defaultId)
     {
         string name = SafeGet(() => device.FriendlyName) ?? device.ID;

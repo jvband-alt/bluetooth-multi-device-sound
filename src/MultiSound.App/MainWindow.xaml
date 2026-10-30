@@ -197,6 +197,21 @@
                            Style="{StaticResource Caption}" Margin="2,0,0,12"
                            Visibility="{Binding Devices.Count, Converter={StaticResource InvVis}}" />
 
+                <!-- Sincronização automática -->
+                <TextBlock Text="SINCRONIZAÇÃO" Style="{StaticResource SectionTitle}" Margin="2,8,0,8" />
+                <Border Style="{StaticResource Card}" Margin="0,0,0,12">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource Caption}" LineHeight="17"
+                                   Text="Medição automática pelo microfone do notebook (ou da webcam): cada caixa toca um som de varredura, uma de cada vez, e o MultiSound calcula e aplica os atrasos. Deixe o notebook mais ou menos à mesma distância das caixas, faça silêncio e mantenha o volume das caixas audível. O microfone das caixas não é usado: ele mudaria as caixas para o modo viva-voz." />
+                        <Button Content="SINCRONIZAR COM O MICROFONE" Command="{Binding MeasureCommand}" Margin="0,12,0,0"
+                                HorizontalAlignment="Left" Padding="16,9"
+                                ToolTip="Leva cerca de 15 segundos. Disponível durante a reprodução." />
+                        <TextBlock Text="{Binding MeasureText}" Margin="2,10,0,0" LineHeight="18" FontSize="12"
+                                   Foreground="{Binding MeasureKind, Converter={StaticResource StatusBrush}}"
+                                   Visibility="{Binding MeasureText, Converter={StaticResource Vis}}" />
+                    </StackPanel>
+                </Border>
+
                 <!-- Origem -->
                 <TextBlock Text="ORIGEM DO ÁUDIO" Style="{StaticResource SectionTitle}" Margin="2,8,0,8" />
                 <Border Style="{StaticResource Card}" Margin="0,0,0,12">

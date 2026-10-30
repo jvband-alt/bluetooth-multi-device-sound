@@ -6,6 +6,7 @@ using MultiSound.Audio.Output;
 using MultiSound.Core.Devices;
 using MultiSound.Core.Dsp;
 using MultiSound.Core.Formats;
+using MultiSound.Core.Measurement;
 using MultiSound.Core.Settings;
 using MultiSound.Core.Signals;
 using MultiSound.Core.Sync;
@@ -44,6 +45,10 @@ public sealed class AudioEngine : IDisposable
     private volatile bool _testOn;
     private volatile OutputPipeline[] _feeds = Array.Empty<OutputPipeline>();
     private float _sourcePeak;
+    private long _feedPosition;
+    private MeasurementState? _measurement;
+    private float[] _measureScratch = Array.Empty<float>();
+    private int _measuring;
 
     private Timer? _reconnectTimer;
     private Timer? _gapTimer;
@@ -143,6 +148,124 @@ public sealed class AudioEngine : IDisposable
         var cap = _capture;
         return new EngineSnapshot(IsRunning, cap is not null && _captureReady, idle, cap?.Description ?? "",
             cap is not null ? cap.Format : null, _effectiveMode, peak, _testOn, _error, outputs);
+    }
+
+    // ───────────────────────────── medição automática ─────────────────────────────
+
+    /// <summary>
+    /// Mede a diferença de latência entre as saídas usando um microfone que NÃO seja Bluetooth (ex.: o do
+    /// notebook): cada saída toca um chirp sozinha, em horários conhecidos, e a gravação única é analisada.
+    /// A latência do microfone se cancela. Durante a medição o áudio dos apps é substituído por silêncio.
+    /// </summary>
+    public async Task<SyncMeasurementOutcome> MeasureSyncAsync(IReadOnlyList<string> outputIds, IProgress<double>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (Interlocked.Exchange(ref _measuring, 1) == 1)
+            return Fail("Já existe uma medição em andamento.");
+
+        MicrophoneRecorder? recorder = null;
+        try
+        {
+            // 1) Prepara saídas e microfone na thread de controle.
+            var prep = await _thread.InvokeAsync<(string? Error, List<(string, string, OutputPipeline)>? Pipes, MicrophoneRecorder? Mic)>(() =>
+            {
+                if (!IsRunning || _capture is null) return ("Inicie a reprodução antes de medir.", null, null);
+                var pipes = new List<(string, string, OutputPipeline)>();
+                lock (_slotsLock)
+                {
+                    foreach (var id in outputIds)
+                        if (_slots.TryGetValue(id, out var slot) && slot.Output is not null)
+                            pipes.Add((slot.Config.Id, slot.Config.Name, slot.Output.Pipeline));
+                }
+                if (pipes.Count < 2)
+                    return ("São necessárias pelo menos duas caixas com status \"Reproduzindo\".", null, null);
+
+                var device = _catalog.PickMeasurementMicrophone();
+                if (device is null)
+                    return ("Nenhum microfone utilizável encontrado. É preciso um microfone que NÃO seja Bluetooth " +
+                            "(ex.: o do notebook ou da webcam) — o microfone das caixas mudaria o perfil delas para viva-voz.", null, null);
+                try
+                {
+                    var mic = new MicrophoneRecorder(device);
+                    mic.Start();
+                    return (null, pipes, mic);
+                }
+                catch (Exception ex)
+                {
+                    return ($"Não foi possível abrir o microfone ({Describe(ex)}). Verifique em Configurações → Privacidade → " +
+                            "Microfone se aplicativos da área de trabalho podem usar o microfone.", null, null);
+                }
+            });
+            if (prep.Error is not null) return Fail(prep.Error);
+            recorder = prep.Mic!;
+            var pipes = prep.Pipes!;
+
+            // 2) Deixa o microfone estabilizar e agenda os chirps na linha do tempo da alimentação.
+            await Task.Delay(700, cancellationToken);
+            int rate = _capture?.Format.SampleRate ?? throw new InvalidOperationException("Captura interrompida.");
+            var plan = new SyncMeasurementPlan(pipes.Count);
+            double micIndexAtStart;
+            lock (_feedLock)
+            {
+                micIndexAtStart = recorder.FramesRecorded;
+                _measurement = new MeasurementState(plan, rate, Chirp.Create(rate), _feedPosition,
+                    pipes.Select((p, i) => (Pipe: p.Item3, Index: i)).ToDictionary(x => x.Pipe, x => x.Index));
+            }
+
+            // 3) Aguarda o plano inteiro.
+            var sw = Stopwatch.StartNew();
+            while (sw.Elapsed.TotalSeconds < plan.TotalSeconds)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                progress?.Report(Math.Min(1.0, sw.Elapsed.TotalSeconds / plan.TotalSeconds));
+                await Task.Delay(200, cancellationToken);
+            }
+            lock (_feedLock) _measurement = null;
+
+            var mic = recorder;
+            float[] samples = await _thread.InvokeAsync(mic.StopAndGetSamples);
+            if (mic.Error is not null) return Fail($"O microfone parou durante a medição ({Describe(mic.Error)}).", mic.Name);
+            if (samples.Length < mic.SampleRate) return Fail("O microfone não entregou áudio suficiente.", mic.Name);
+
+            float peak = LevelMath.Peak(samples);
+            if (peak < 1e-4f)
+                return Fail("O microfone gravou silêncio absoluto. Verifique se ele está no mudo ou bloqueado em " +
+                            "Configurações → Privacidade → Microfone (\"Permitir que aplicativos da área de trabalho acessem o microfone\").", mic.Name);
+
+            // 4) Análise (fora das threads de áudio).
+            var latencies = await Task.Run(() =>
+                SyncAnalyzer.Analyze(samples, mic.SampleRate, micIndexAtStart, plan, Chirp.Create(mic.SampleRate)), cancellationToken);
+            var outputs = latencies.Select(l => new MeasuredOutput(pipes[l.Device].Item1, pipes[l.Device].Item2, l)).ToList();
+            int detected = outputs.Count(o => o.Latency.Detected);
+            if (detected < 2)
+            {
+                var missing = string.Join(", ", outputs.Where(o => !o.Latency.Detected).Select(o => o.Name));
+                return new SyncMeasurementOutcome(false,
+                    $"O microfone não ouviu o sinal de: {missing}. Aproxime o notebook das caixas, aumente o volume, " +
+                    "tire do mudo e repita em ambiente silencioso.", mic.Name, outputs);
+            }
+            return new SyncMeasurementOutcome(true, "", mic.Name, outputs);
+        }
+        catch (OperationCanceledException)
+        {
+            return Fail("Medição cancelada.", recorder?.Name);
+        }
+        catch (Exception ex)
+        {
+            return Fail($"Falha na medição: {Describe(ex)}", recorder?.Name);
+        }
+        finally
+        {
+            lock (_feedLock) _measurement = null;
+            if (recorder is not null)
+            {
+                var r = recorder;
+                try { await _thread.InvokeAsync(r.Dispose); } catch { /* encerrando */ }
+            }
+            Interlocked.Exchange(ref _measuring, 0);
+        }
+
+        static SyncMeasurementOutcome Fail(string msg, string? mic = null) => new(false, msg, mic, Array.Empty<MeasuredOutput>());
     }
 
     // ───────────────────────────── controle (AudioThread) ─────────────────────────────
@@ -499,11 +622,51 @@ public sealed class AudioEngine : IDisposable
     private void Feed(int frames)
     {
         var span = _scratch.AsSpan(0, frames * 2);
+        var m = _measurement;
+        if (m is not null)
+        {
+            FeedMeasurement(m, frames);
+            _feedPosition += frames;
+            return;
+        }
+        _feedPosition += frames;
         if (_testOn) _test?.Generate(span, frames);
         float peak = LevelMath.Peak(span);
         if (peak > _sourcePeak) _sourcePeak = peak;
         foreach (var p in _feeds) p.Write(span);
     }
+
+    /// <summary>Cada saída recebe silêncio, exceto o seu próprio chirp nos horários do plano.</summary>
+    private void FeedMeasurement(MeasurementState m, int frames)
+    {
+        if (_measureScratch.Length < frames * 2) _measureScratch = new float[frames * 2];
+        var buf = _measureScratch.AsSpan(0, frames * 2);
+        long from = _feedPosition, to = _feedPosition + frames;
+        foreach (var p in _feeds)
+        {
+            buf.Clear();
+            if (m.DeviceIndex.TryGetValue(p, out int device))
+            {
+                for (int r = 0; r < m.Plan.Rounds; r++)
+                {
+                    long start = m.StartPosition + (long)Math.Round(m.Plan.ScheduledSeconds(r, device) * m.Rate);
+                    long end = start + m.Chirp.Length;
+                    long a = Math.Max(from, start), b = Math.Min(to, end);
+                    for (long x = a; x < b; x++)
+                    {
+                        float v = m.Chirp[x - start];
+                        int i = (int)(x - from);
+                        buf[i * 2] = v;
+                        buf[i * 2 + 1] = v;
+                    }
+                }
+            }
+            p.Write(buf);
+        }
+    }
+
+    private sealed record MeasurementState(SyncMeasurementPlan Plan, int Rate, float[] Chirp, long StartPosition,
+        Dictionary<OutputPipeline, int> DeviceIndex);
 
     private static string Describe(Exception? ex) => ex switch
     {

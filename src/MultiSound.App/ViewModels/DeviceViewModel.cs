@@ -184,7 +184,7 @@ public sealed class DeviceViewModel : ObservableObject
 
         Detail = status.Message;
         Stats = status.Stats is { } s
-            ? $"buffer {s.FillMs:0} ms · drift {s.CorrectionPpm:+0;-0;0} ppm · falhas {s.Underruns}"
+            ? $"buffer {s.FillMs:0} ms · drift {s.CorrectionPpm:+0;-0;0} ppm · falhas {s.Underruns} · ressinc. {s.Resyncs}"
             : "";
         Level = status.Stats is { } st ? meter(st.PeakLevel) : 0;
 
