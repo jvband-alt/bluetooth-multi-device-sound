@@ -1,0 +1,85 @@
+name: build
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_NOLOGO: "1"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Testes automatizados (buffer, conversão, reamostragem, sincronização)
+        run: dotnet test tests/MultiSound.Core.Tests -c Release --logger "console;verbosity=normal"
+
+      - name: Compilar solução
+        run: dotnet build MultiSound.sln -c Release
+
+      - name: Publicar executável autocontido (win-x64)
+        run: dotnet publish src/MultiSound.App -c Release -r win-x64 -o dist/MultiSound
+
+      - name: Publicar versão leve (requer .NET 8 Desktop Runtime)
+        run: dotnet publish src/MultiSound.App -c Release -r win-x64 --self-contained false -p:EnableCompressionInSingleFile=false -o dist/MultiSound-leve
+
+      - name: Habilitar serviço de áudio do Windows (diagnóstico)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          Set-Service Audiosrv -StartupType Automatic
+          Start-Service Audiosrv
+          Get-Service Audiosrv, AudioEndpointBuilder | Format-Table -AutoSize
+
+      - name: Teste de fumaça da interface (abre, inicializa, captura tela, fecha)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist/MultiSound/MultiSound.exe -ArgumentList '--smoke-test', "$PWD/screenshot.png" `
+               -PassThru -RedirectStandardOutput smoke-out.txt -RedirectStandardError smoke-err.txt
+          if (-not $p.WaitForExit(120000)) { $p.Kill(); throw "Teste de fumaça excedeu o tempo." }
+          Get-Content smoke-out.txt, smoke-err.txt -ErrorAction SilentlyContinue
+          $log = Join-Path $env:APPDATA 'MultiSound/multisound.log'
+          if (Test-Path $log) { Get-Content $log }
+          if ($p.ExitCode -ne 0) { throw "Teste de fumaça falhou (código $($p.ExitCode))." }
+          if (-not (Test-Path screenshot.png)) { throw "Captura de tela não foi gerada." }
+
+      - name: Diagnóstico de captura (sem caixas de som)
+        continue-on-error: true
+        run: dotnet run --project tools/MultiSound.Cli -c Release -- diag
+
+      - name: Empacotar
+        shell: pwsh
+        run: |
+          Copy-Item README.md dist/MultiSound/
+          Copy-Item README.md dist/MultiSound-leve/
+          Compress-Archive -Path dist/MultiSound/MultiSound.exe, dist/MultiSound/README.md -DestinationPath MultiSound-win-x64.zip
+          Compress-Archive -Path dist/MultiSound-leve/* -DestinationPath MultiSound-win-x64-requer-dotnet.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MultiSound-win-x64
+          path: |
+            MultiSound-win-x64.zip
+            MultiSound-win-x64-requer-dotnet.zip
+            screenshot.png
+
+      - name: Publicar release (tags v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            MultiSound-win-x64.zip
+            MultiSound-win-x64-requer-dotnet.zip

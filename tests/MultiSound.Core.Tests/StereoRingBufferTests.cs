@@ -71,7 +71,7 @@ public class StereoRingBufferTests
     }
 
     [Fact]
-    public void ConcurrentProducerConsumer_NoCorruption()
+    public async Task ConcurrentProducerConsumer_NoCorruption()
     {
         var rb = new StereoRingBuffer(4096);
         const int total = 200_000;
@@ -103,7 +103,7 @@ public class StereoRingBufferTests
             readCount += got;
             if (got == 0) Thread.Yield();
         }
-        producer.Wait();
+        await producer;
         Assert.True(ordered);
         Assert.Equal((long)total * (total - 1) / 2, sumRead);
     }

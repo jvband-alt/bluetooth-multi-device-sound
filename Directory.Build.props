@@ -11,4 +11,7 @@
     <!-- Permite compilar projetos Windows (WPF) a partir de Linux/macOS (CI ou dev). -->
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
 </Project>
